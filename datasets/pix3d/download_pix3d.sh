@@ -11,7 +11,7 @@ unzip -qq pix3d.zip
 
 BASE=https://dl.fbaipublicfiles.com/meshrcnn
 
-wget $BASE/pix3d/pix3d_s1_train.json
-wget $BASE/pix3d/pix3d_s1_test.json
-wget $BASE/pix3d/pix3d_s2_train.json
-wget $BASE/pix3d/pix3d_s2_test.json
+wget https://dl.fbaipublicfiles.com/meshrcnn/pix3d/pix3d_s1_train.json
+wget https://dl.fbaipublicfiles.com/meshrcnn/pix3d/pix3d_s1_test.json
+wget https://dl.fbaipublicfiles.com/meshrcnn/pix3d/pix3d_s2_train.json
+wget https://dl.fbaipublicfiles.com/meshrcnn/pix3d/pix3d_s2_test.json

@@ -136,33 +136,6 @@ def mesh_rcnn_inference(pred_meshes, pred_instances):
         instances.pred_meshes = MeshInstances([(v, f) for (v, f) in zip(verts_list, faces_list)])
 
 
-class PointGenCon(nn.Module):
-    def __init__(self, bottleneck_size = 2500, output_dim = 3):
-        super(PointGenCon, self).__init__()
-        self.conv0 = torch.nn.Conv1d(output_dim, bottleneck_size, 1)
-        self.conv1 = torch.nn.Conv1d(bottleneck_size, bottleneck_size, 1)
-        self.conv2 = torch.nn.Conv1d(bottleneck_size, bottleneck_size//2, 1)
-        self.conv3 = torch.nn.Conv1d(bottleneck_size//2, bottleneck_size//4, 1)
-        self.conv4 = torch.nn.Conv1d(bottleneck_size//4, output_dim, 1)
-
-        self.th = nn.Tanh()
-
-        # self.bn0 = torch.nn.BatchNorm1d(output_dim)
-        self.bn1 = torch.nn.BatchNorm1d(bottleneck_size)
-        self.bn2 = torch.nn.BatchNorm1d(bottleneck_size//2)
-        self.bn3 = torch.nn.BatchNorm1d(bottleneck_size//4)
-
-    def forward(self, x, latent):
-        # Batch, 1024, 3 + Batch, 1024, 1
-        x = self.bn1(self.conv0(x))+ latent
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = self.th(self.conv4(x))
-        # print('decoder shape: ', x.shape)
-        return x
-
-
 class MeshRefinementStage(nn.Module):
     def __init__(self, img_feat_dim, vert_feat_dim, hidden_dim, stage_depth, gconv_init="normal"):
         """
@@ -227,6 +200,29 @@ class MeshRefinementStage(nn.Module):
         # print('mesh: ', mesh.shape)
         return mesh, vert_feats_nopos
 
+class PointGenCon(nn.Module):
+    def __init__(self, bottleneck_size = 2500, output_dim = 3):
+        super(PointGenCon, self).__init__()
+        self.conv1 = torch.nn.Conv1d(bottleneck_size, bottleneck_size, 1)
+        self.conv2 = torch.nn.Conv1d(bottleneck_size, bottleneck_size//2, 1)
+        self.conv3 = torch.nn.Conv1d(bottleneck_size//2, bottleneck_size//4, 1)
+        self.conv4 = torch.nn.Conv1d(bottleneck_size//4, output_dim, 1)
+
+        self.th = nn.Tanh()
+
+        # self.bn0 = torch.nn.BatchNorm1d(output_dim)
+        self.bn1 = torch.nn.BatchNorm1d(bottleneck_size)
+        self.bn2 = torch.nn.BatchNorm1d(bottleneck_size//2)
+        self.bn3 = torch.nn.BatchNorm1d(bottleneck_size//4)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = self.th(self.conv4(x))
+        return x
+
+
 @ROI_MESH_HEAD_REGISTRY.register()
 class MeshRCNNGraphConvHead(nn.Module):
     """
@@ -241,68 +237,55 @@ class MeshRCNNGraphConvHead(nn.Module):
         graph_conv_init    = cfg.MODEL.ROI_MESH_HEAD.GRAPH_CONV_INIT
         input_channels     = input_shape.channels
         # fmt: on
-        self.subnetworks = 3
-        self.num_pts_in_patches = 300
 
-        self.bottleneck_size = 1024
-        self.fc = nn.Linear(input_channels, self.bottleneck_size)
-        # Intialize deformation networks
-        self.decoder = nn.ModuleList([PointGenCon(bottleneck_size= self.bottleneck_size) for i in range(0, self.subnetworks)])
-
-        self.stages = nn.ModuleList()
-        for i in range(num_stages):
-            vert_feat_dim = 0 if i == 0 else graph_conv_dim
-            stage = MeshRefinementStage(
-                input_channels,
-                vert_feat_dim,
-                graph_conv_dim,
-                num_graph_convs,
-                gconv_init=graph_conv_init,
-            )
-            self.stages.append(stage)
-
-    def encoder(self, features):
-        x = self.fc(features)
-        # print('encoder: ', x.shape)
-        return x
-
-    def atlas_forward(self, x, mesh): # input: features
-        # get sample points
-        img_feats = vert_align(x, mesh, return_packed=True, padding_mode="border") # turn to 2 dim
-        # print(img_feats.shape) # torch.Size([324, 256])
-        sampled_verts = mesh.verts_packed() # [,3]
-        sampled_verts = sampled_verts.unsqueeze(0) # [1 ,V_num, 3]
-        sampled_verts = sampled_verts.permute(0,2,1) # [1, 3, V_num]
-        # print(sampled_verts.shape) # torch.Size([1, 3, V_num]) torch.Size([1, 3, 324])
-        # image encoding
-        # print('mesh: ', mesh.verts_packed().shape)
-        # latent_vec = self.encoder(x)# torch.Size([23, 1024])
-        latent_vec = self.encoder(img_feats) # torch.Size([276, 1024])
-        latent_vec = latent_vec.permute(1, 0)
-        meshes = []
-        for i in range(self.subnetworks): # sampled_verts [1, 3, V_num] latent_vec: [1, 1024, V_num]
-            res_mark = self.decoder[i](sampled_verts, latent_vec.unsqueeze(0)) #
-            res_mark = res_mark.squeeze(0).permute(1, 0)
-            mesh = mesh.offset_verts(res_mark)
-            # print(res_mark.shape)
-            meshes.append(mesh)
-        return meshes
+        self.use_atlas = not cfg.MODEL.VOXEL_ON
+        if self.use_atlas:
+            self.subnetworks = 5
+            self.num_pts_in_patches = 300
+            self.bottleneck_size = 1024
+            self.avPooling = nn.AvgPool2d((input_shape.height,input_shape.width))
+            self.encoder = nn.Linear(input_shape.channels, self.bottleneck_size)
+            self.decoder = nn.ModuleList([PointGenCon(bottleneck_size= self.bottleneck_size+3) for i in range(0, self.subnetworks)])
+        else:
+            self.stages = nn.ModuleList()
+            for i in range(num_stages):
+                vert_feat_dim = 0 if i == 0 else graph_conv_dim
+                stage = MeshRefinementStage(
+                    input_channels,
+                    vert_feat_dim,
+                    graph_conv_dim,
+                    num_graph_convs,
+                    gconv_init=graph_conv_init,
+                )
+                self.stages.append(stage)
 
 
     def forward(self, x, mesh): # x: mesh_features  init_mesh
-        # 需要重新设计输入输出即可
-        # encoder 输入 + mesh
         if x.numel() == 0 or mesh.isempty():
             return [Meshes(verts=[], faces=[])]
-        if use_atlas == True:
-            return self.atlas_forward(x, mesh)
+        meshes = []
+        # ATLAS
+        if self.use_atlas:
+            avPooled_x = self.avPooling(x) # (N, 256)
+            flattened_x = torch.flatten(avPooled_x, start_dim=1) # (N,256)
+            im_latent = self.encoder(flattened_x) # (N, 1024)
+            num_vert = mesh.num_verts_per_mesh()[0] # supposing that all meshes have the same num of vertices (it comes from an expand)
+            im_latent_repeated = im_latent.repeat_interleave(num_vert, dim=0) # (NV, 1024)
+            im_latent_repeated = im_latent_repeated.permute(1, 0).unsqueeze(0)  # [1, 1024, NV]
+            for i in range(self.subnetworks):
+                sampled_verts = mesh.verts_packed().permute(1, 0).unsqueeze(0)  # [1, NV, 3]
+                verts_with_latent = torch.cat((im_latent_repeated, sampled_verts), dim=1)   # [1, 1027, NV]
+                deformation = self.decoder[i](verts_with_latent)    # [1, 3, NV]
+                deformation = deformation.squeeze(0).permute(1, 0)
+                mesh = mesh.offset_verts(deformation)
+                meshes.append(mesh)
+        # MESHRCNN
         else:
-            meshes = []
             vert_feats = None
             for stage in self.stages:
                 mesh, vert_feats = stage(x, mesh, vert_feats=vert_feats)
                 meshes.append(mesh)
-            return meshes # out_mesh
+        return meshes
 
 
 @ROI_MESH_HEAD_REGISTRY.register()

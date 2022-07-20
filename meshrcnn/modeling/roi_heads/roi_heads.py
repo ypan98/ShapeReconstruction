@@ -39,10 +39,6 @@ class MeshRCNNROIHeads(StandardROIHeads):
         # p4: ShapeSpec(channels=256, height=None, width=None, stride=16)
         # p5: ShapeSpec(channels=256, height=None, width=None, stride=32)
         # p6: ShapeSpec(channels=256, height=None, width=None, stride=64)
-        for key, value in input_shape.items():
-            print(key, ' : ', value)
-
-            #### 需要改为 atlasnet structure
         self._init_z_head(cfg, input_shape) # make three steps pred z voxel and mesh
         self._init_voxel_head(cfg, input_shape) # 初始化 + 构建网络
         self._init_mesh_head(cfg, input_shape)
@@ -300,12 +296,9 @@ class MeshRCNNROIHeads(StandardROIHeads):
                         init_mesh = cubify(vox_in, self.cubify_thresh)  # 1
                 else:
                     raise ValueError("No support for class specific predictions")
-            # just mesh_on
             if self.mesh_on:
                 mesh_features = self.mesh_pooler(features, proposal_boxes)
-                # print('mesh_features shape: ')
-                # print(mesh_features.shape)
-                if not self.voxel_on: # voxel turn off template
+                if not self.voxel_on:
                     if mesh_features.shape[0] > 0:
                         init_mesh = ico_sphere(self.ico_sphere_level, mesh_features.device)
                         init_mesh = init_mesh.extend(mesh_features.shape[0])
