@@ -12,5 +12,4 @@ wget http://cvgl.stanford.edu/data2/ShapeNetRendering.tgz
 tar -xvzf ShapeNetRendering.tgz
 
 # downloand splits
-BASE=https://dl.fbaipublicfiles.com/meshrcnn
-wget $BASE/shapenet/pix2mesh_splits_val05.json
+wget https://dl.fbaipublicfiles.com/meshrcnn/shapenet/pix2mesh_splits_val05.json

@@ -69,6 +69,10 @@ def mesh_rcnn_loss(
         gt_meshes, num_samples=gt_num_samples, return_normals=True
     )
 
+    # Save Meshes for visualization
+    # print("gt:", torch.max(gt_meshes.verts_packed()), torch.min(gt_meshes.verts_packed()))    # [-1, 1]
+    # print("pred:", torch.max(pred_meshes[-1].verts_packed()), torch.min(pred_meshes[-1].verts_packed()))  # [-1, 1]
+
     all_loss_chamfer = []
     all_loss_normals = []
     all_loss_edge = []
@@ -240,10 +244,10 @@ class MeshRCNNGraphConvHead(nn.Module):
 
         self.use_atlas = not cfg.MODEL.VOXEL_ON
         if self.use_atlas:
-            self.subnetworks = 5
+            self.subnetworks = 3
             self.num_pts_in_patches = 300
             self.bottleneck_size = 1024
-            self.avPooling = nn.AvgPool2d((input_shape.height,input_shape.width))
+            self.avPooling = nn.MaxPool2d((input_shape.height,input_shape.width))
             self.encoder = nn.Linear(input_shape.channels, self.bottleneck_size)
             self.decoder = nn.ModuleList([PointGenCon(bottleneck_size= self.bottleneck_size+3) for i in range(0, self.subnetworks)])
         else:
