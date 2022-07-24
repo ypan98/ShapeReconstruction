@@ -14,6 +14,7 @@ from meshrcnn.modeling.roi_heads.mesh_head import (
     build_mesh_head,
     mesh_rcnn_inference,
     mesh_rcnn_loss,
+    SVRLoss
 )
 from meshrcnn.modeling.roi_heads.voxel_head import (
     build_voxel_head,
@@ -22,6 +23,9 @@ from meshrcnn.modeling.roi_heads.voxel_head import (
 )
 from meshrcnn.modeling.roi_heads.z_head import build_z_head, z_rcnn_inference, z_rcnn_loss
 from meshrcnn.utils import vis as vis_utils
+
+from detectron2.structures import Boxes, Instances
+from typing import Dict, List
 
 
 @ROI_HEADS_REGISTRY.register()
@@ -32,15 +36,8 @@ class MeshRCNNROIHeads(StandardROIHeads):
 
     def __init__(self, cfg, input_shape: Dict[str, ShapeSpec]):
         super().__init__(cfg, input_shape)
-        print('MeshRCNNROIHead: ') # get the dimension height
-        # MeshRCNNROIHead:
-        # p2: ShapeSpec(channels=256, height=None, width=None, stride=4)
-        # p3: ShapeSpec(channels=256, height=None, width=None, stride=8)
-        # p4: ShapeSpec(channels=256, height=None, width=None, stride=16)
-        # p5: ShapeSpec(channels=256, height=None, width=None, stride=32)
-        # p6: ShapeSpec(channels=256, height=None, width=None, stride=64)
-        self._init_z_head(cfg, input_shape) # make three steps pred z voxel and mesh
-        self._init_voxel_head(cfg, input_shape) # 初始化 + 构建网络
+        self._init_z_head(cfg, input_shape)
+        self._init_voxel_head(cfg, input_shape)
         self._init_mesh_head(cfg, input_shape)
         # If MODEL.VIS_MINIBATCH is True we store minibatch targets
         # for visualization purposes
@@ -115,13 +112,27 @@ class MeshRCNNROIHeads(StandardROIHeads):
         mesh_pooler_type        = cfg.MODEL.ROI_MESH_HEAD.POOLER_TYPE
         # fmt: on
 
-        self.chamfer_loss_weight = cfg.MODEL.ROI_MESH_HEAD.CHAMFER_LOSS_WEIGHT
-        self.normals_loss_weight = cfg.MODEL.ROI_MESH_HEAD.NORMALS_LOSS_WEIGHT
-        self.edge_loss_weight = cfg.MODEL.ROI_MESH_HEAD.EDGE_LOSS_WEIGHT
         self.gt_num_samples = cfg.MODEL.ROI_MESH_HEAD.GT_NUM_SAMPLES
         self.pred_num_samples = cfg.MODEL.ROI_MESH_HEAD.PRED_NUM_SAMPLES
         self.gt_coord_thresh = cfg.MODEL.ROI_MESH_HEAD.GT_COORD_THRESH
         self.ico_sphere_level = cfg.MODEL.ROI_MESH_HEAD.ICO_SPHERE_LEVEL
+
+        # MESHRCNN
+        if self.voxel_on:
+            self.chamfer_loss_weight = cfg.MODEL.ROI_MESH_HEAD.CHAMFER_LOSS_WEIGHT
+            self.normals_loss_weight = cfg.MODEL.ROI_MESH_HEAD.NORMALS_LOSS_WEIGHT
+            self.edge_loss_weight = cfg.MODEL.ROI_MESH_HEAD.EDGE_LOSS_WEIGHT
+        # ATLAS
+        else:
+            self.chamfer_loss_weight = 1.0
+            self.edge_loss_weight = 0.1
+            self.face_loss_weight = 0.01
+            self.boundary_loss_weight = 0.5
+
+
+        self.chamfer_loss_weight = cfg.MODEL.ROI_MESH_HEAD.CHAMFER_LOSS_WEIGHT
+        self.normals_loss_weight = cfg.MODEL.ROI_MESH_HEAD.NORMALS_LOSS_WEIGHT
+        self.edge_loss_weight = cfg.MODEL.ROI_MESH_HEAD.EDGE_LOSS_WEIGHT
 
         in_channels = [input_shape[f].channels for f in self.in_features][0]
 
@@ -152,6 +163,9 @@ class MeshRCNNROIHeads(StandardROIHeads):
 
         if self._vis:
             self._misc["proposals"] = proposals
+
+        #print("f:", features.keys())
+        #print("p:", proposals.keys())
 
         if self.training:
             losses = self._forward_box(features, proposals)
@@ -273,8 +287,8 @@ class MeshRCNNROIHeads(StandardROIHeads):
         """
         if not self.voxel_on and not self.mesh_on:
             return {} if self.training else instances
-
         features = [features[f] for f in self.in_features]
+
         if self.training:
             # The loss is only defined on positive proposals.
             proposals, _ = select_foreground_proposals(instances, self.num_classes)
@@ -301,44 +315,78 @@ class MeshRCNNROIHeads(StandardROIHeads):
                 if not self.voxel_on:
                     if mesh_features.shape[0] > 0:
                         init_mesh = ico_sphere(self.ico_sphere_level, mesh_features.device)
-                        init_mesh = init_mesh.extend(mesh_features.shape[0])
                     else:
                         init_mesh = Meshes(verts=[], faces=[])
 
-                pred_meshes = self.mesh_head(mesh_features, init_mesh)
+                # filter the empty proposals, expressed with index self.num_classes as class index
+                gt_classes = torch.cat([instance.gt_classes[instance.gt_classes < self.num_classes] for instance in instances])
 
                 # loss weights
-                loss_weights = {
-                    "chamfer": self.chamfer_loss_weight,
-                    "normals": self.normals_loss_weight,
-                    "edge": self.edge_loss_weight,
-                }
-
-                if not pred_meshes[0].isempty():
-                    loss_chamfer, loss_normals, loss_edge, target_meshes = mesh_rcnn_loss(
-                        pred_meshes,
-                        proposals,
-                        loss_weights=loss_weights,
-                        gt_num_samples=self.gt_num_samples,
-                        pred_num_samples=self.pred_num_samples,
-                        gt_coord_thresh=self.gt_coord_thresh,
-                    )
-                    if self._vis:
-                        self._misc["init_meshes"] = init_mesh
-                        self._misc["target_meshes"] = target_meshes
-                else:
-                    loss_chamfer = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
-                    loss_normals = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
-                    loss_edge = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
-
-                losses.update(
-                    {
-                        "loss_chamfer": loss_chamfer,
-                        "loss_normals": loss_normals,
-                        "loss_edge": loss_edge,
+                # MESHRCNN
+                if self.voxel_on:
+                    pred_meshes = self.mesh_head(mesh_features, init_mesh, gt_classes)
+                    loss_weights = {
+                        "chamfer": self.chamfer_loss_weight,
+                        "normals": self.normals_loss_weight,
+                        "edge": self.edge_loss_weight,
                     }
-                )
-
+                    if not pred_meshes[0].isempty():
+                        loss_chamfer, loss_normals, loss_edge, target_meshes = mesh_rcnn_loss(
+                            pred_meshes,
+                            proposals,
+                            loss_weights=loss_weights,
+                            gt_num_samples=self.gt_num_samples,
+                            pred_num_samples=self.pred_num_samples,
+                            gt_coord_thresh=self.gt_coord_thresh,
+                        )
+                        if self._vis:
+                            self._misc["init_meshes"] = init_mesh.extend(mesh_features.shape[0])
+                            self._misc["target_meshes"] = target_meshes
+                    else:
+                        loss_chamfer = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                        loss_normals = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                        loss_edge = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                    losses.update(
+                        {
+                            "loss_chamfer": loss_chamfer,
+                            "loss_normals": loss_normals,
+                            "loss_edge": loss_edge,
+                        }
+                    )
+                # ATLAS
+                else:
+                    pred_meshes, points_from_edges, point_indicators = self.mesh_head(mesh_features, init_mesh, gt_classes)
+                    loss_weights = {
+                        "chamfer": self.chamfer_loss_weight,
+                        "edge": self.edge_loss_weight,
+                        "face":  self.face_loss_weight,
+                        "boundary": self.boundary_loss_weight
+                    }
+                    if not pred_meshes[0].isempty():
+                        loss_chamfer, loss_edge, loss_face, loss_boundary, target_meshes = SVRLoss(
+                            pred_meshes,
+                            points_from_edges,
+                            point_indicators,
+                            proposals,
+                            loss_weights=loss_weights,
+                            gt_coord_thresh=self.gt_coord_thresh,
+                        )
+                        if self._vis:
+                            self._misc["init_meshes"] = init_mesh.extend(mesh_features.shape[0])
+                            self._misc["target_meshes"] = target_meshes
+                    else:
+                        loss_chamfer = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                        loss_edge = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                        loss_face = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                        loss_boundary = sum(k.sum() for k in self.mesh_head.parameters()) * 0.0
+                    losses.update(
+                        {
+                            "loss_chamfer": loss_chamfer,
+                            "loss_edge": loss_edge,
+                            "loss_face": loss_face,
+                            "loss_boundary": loss_boundary
+                        }
+                    )
             return losses
         else:
             pred_boxes = [x.pred_boxes for x in instances]
@@ -359,10 +407,11 @@ class MeshRCNNROIHeads(StandardROIHeads):
                 if not self.voxel_on:
                     if mesh_features.shape[0] > 0:
                         init_mesh = ico_sphere(self.ico_sphere_level, mesh_features.device)
-                        init_mesh = init_mesh.extend(mesh_features.shape[0])
                     else:
                         init_mesh = Meshes(verts=[], faces=[])
-                pred_meshes = self.mesh_head(mesh_features, init_mesh)
+
+                pred_classes = torch.cat([instance.pred_classes[instance.pred_classes < self.num_classes] for instance in instances])
+                pred_meshes = self.mesh_head(mesh_features, init_mesh, pred_classes)
                 mesh_rcnn_inference(pred_meshes[-1], instances)
             else:
                 assert self.voxel_on

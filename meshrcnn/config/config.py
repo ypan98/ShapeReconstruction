@@ -82,6 +82,6 @@ def get_meshrcnn_cfg_defaults(cfg):
     # coord thresh
     cfg.MODEL.ROI_MESH_HEAD.GT_COORD_THRESH = 0.0
     # Init ico_sphere level (only for when voxel_on is false)
-    cfg.MODEL.ROI_MESH_HEAD.ICO_SPHERE_LEVEL = 4 # 3 -> 642 vertices, 4 -> 2562 vertices, 5 -> 10242 vertices
+    cfg.MODEL.ROI_MESH_HEAD.ICO_SPHERE_LEVEL = 3 # 3 -> 642 vertices, 4 -> 2562 vertices
 
     return cfg

@@ -3,6 +3,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 from collections import OrderedDict
 import detectron2.utils.comm as comm
+import torch.autograd
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.data import (
@@ -90,13 +91,13 @@ def main(args):
         )
         res = Trainer.test(cfg, model)
         return res
-
     trainer = Trainer(cfg)
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
 
 
 if __name__ == "__main__":
+    torch.autograd.set_detect_anomaly(True)
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
     launch(

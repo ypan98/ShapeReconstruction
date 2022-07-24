@@ -39,10 +39,10 @@
     }
   ],
   "annotations": [
-    {"iscrowd": 0, "segmentation": "mask/bed/0083.png", "model": "model/bed/IKEA_BEDDINGE/model.obj", "category_id": 1, "K": [1348.66415751, 430.0, 222.0], "bbox": [136, 92, 584, 256], "trans_mat": [0.0007960450395949983, 0.013743503687899998, 2.20777271209], "area": 149504, "image_id": 4830, "id": 4830, "rot_mat": [[0.999866902741527, -0.0009923624273073498, -0.01628471734107506], [0.004119744907534557, 0.981158920518508, 0.19315848515882772], [0.015786212464131005, -0.1931998651753388, 0.981032419236117]], "voxel": "model/bed/IKEA_BEDDINGE/voxel.mat"}
+    {"iscrowd": 0, "segmentation": "mask/chair/0409.png", "model": "model/chair/SS_042/model.obj", "category_id": 3, "K": [3434.68173275, 1512.0, 2016.0], "bbox": [320, 56, 2131, 3609], "trans_mat": [0.017055282615799992, 0.058128800728, 0.938664993887], "area": 7690779, "image_id": 1, "id": 1, "rot_mat": [[0.7829390757301289, 0.005066182290536127, 0.6220777583966899], [-0.31879059850064173, 0.8619595114951648, 0.39420598023193354], [-0.5342087213837434, -0.506951806723298, 0.676476834531331]], "voxel": "model/chair/SS_042/voxel.mat"}
   ],
   "licenses": {},
-  "images": [{"height": 444, "file_name": "img/bed/0083.jpg", "id": 4830, "width": 860}],
+  "images": [{"height": 4032, "file_name": "img/chair/0409.jpg", "id": 1, "width": 3024}],
   "info": {"url": "https://github.com/xingyuansun/pix3d",
     "contributor": "Pix3D", "year": 2018, "description": "Dataset of paper https://arxiv.org/abs/1804.04610"}
 }
