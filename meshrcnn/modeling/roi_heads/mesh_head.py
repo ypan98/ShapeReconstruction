@@ -1,10 +1,10 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import numpy as np
 import torch
-from detectron2.layers import ShapeSpec, cat
+from detectron2.layers import ShapeSpec
 from detectron2.utils.registry import Registry
 from pytorch3d.loss import chamfer_distance, mesh_edge_loss
-from pytorch3d.ops import GraphConv, SubdivideMeshes, sample_points_from_meshes, vert_align
+from pytorch3d.ops import GraphConv, sample_points_from_meshes, vert_align
 from pytorch3d.structures import Meshes
 from torch import nn
 from torch.nn import functional as F
@@ -107,7 +107,7 @@ def mesh_rcnn_loss(
 
 # From Total3DUnderstanding
 def SVRLoss(
-    pred_meshes:list[Meshes],
+    pred_meshes: list[Meshes],
     points_from_edges,
     point_indicators,
     instances,
@@ -119,31 +119,22 @@ def SVRLoss(
         raise ValueError("Expecting a list of Meshes")
 
     gt_verts, gt_faces, gt_verts_density = [], [], []
+    device = pred_meshes[0].device
     # Iterate over batch (in our case 1)
     for instances_per_image in instances:
         if len(instances_per_image) == 0:
             continue
-        gt_K = instances_per_image.gt_K
-        gt_mesh_per_image = batch_crop_meshes_within_box(
-            instances_per_image.gt_meshes, instances_per_image.proposal_boxes.tensor, gt_K
-        ).to(device=pred_meshes[0].device)
-        gt_verts.extend(gt_mesh_per_image.verts_list())
-        gt_faces.extend(gt_mesh_per_image.faces_list())
-        for gt_verts_obj in gt_mesh_per_image.verts_list():
-            gt_verts_obj_np = gt_verts_obj.cpu()
-            tree = cKDTree(gt_verts_obj_np)
-            dists, indices = tree.query(gt_verts_obj_np, k=30)
-            densities = torch.tensor([max(dists[point_set, 1]) ** 2 for point_set in indices]).to(device=pred_meshes[0].device)
-            gt_verts_density.append(densities)
+        verts = torch.stack([mesh[0] for mesh in instances_per_image.gt_meshes], dim=0)
+        faces = [mesh[1] for mesh in instances_per_image.gt_meshes]
+        gt_verts.append(verts)
+        gt_faces.append(faces)
+        gt_verts_density.append(instances_per_image.gt_densities)
 
 
     if len(gt_verts) == 0:
         return None, None
-
-    gt_meshes = Meshes(verts=gt_verts, faces=gt_faces)
-    gt_verts = torch.stack(gt_meshes.verts_list())  # (N, V, 3)
-    gt_verts_density = torch.stack(gt_verts_density)    # (N, V)
-    device = pred_meshes[0].device
+    gt_verts = torch.vstack(gt_verts)  # (N, V, 3)
+    gt_verts_density = torch.vstack(gt_verts_density)    # (N, V)
 
     loss_chamfer = torch.tensor(0.).to(device)
     loss_edge = torch.tensor(0.).to(device)
@@ -165,25 +156,26 @@ def SVRLoss(
                                                                    point_indicators):
         points_from_edges_by_step = points_from_edges_by_step.transpose(1, 2).contiguous()  # (N, 3, E) -> (N, E, 3)
         _, dist2_face, _, _, _, idx2 = chamfer_distance2(gt_verts, points_from_edges_by_step)   # (N, E), (N, E, 1)
-        local_dens = torch.gather(gt_verts_density, 1, idx2.squeeze())
+        local_dens = torch.gather(gt_verts_density, 1, idx2.squeeze(-1))
         in_mesh = (dist2_face <= local_dens).float()
-        loss_face += binary_cls_criterion(points_indicator_by_step, in_mesh)
+        loss_face += binary_cls_criterion(points_indicator_by_step, in_mesh) * loss_weights["face"]
 
-    loss_chamfer = loss_chamfer / len(pred_meshes)
-    loss_edge = loss_edge / len(pred_meshes)
-    loss_boundary = loss_boundary
+    loss_chamfer = 100 * loss_chamfer / len(pred_meshes)
+    loss_edge = 100 * loss_edge / len(pred_meshes)
+    loss_boundary = 100 * loss_boundary
     if points_from_edges:
         loss_face = loss_face / len(points_from_edges)
 
     # if the rois are bad, the target verts can be arbitrarily large
     # causing exploding gradients. If this is the case, ignore the batch
     if gt_coord_thresh and gt_verts.abs().max() > gt_coord_thresh:
+        print("asdasd")
         loss_chamfer = loss_chamfer * 0.0
         loss_face = loss_face * 0.0
         loss_edge = loss_edge * 0.0
         loss_boundary = loss_boundary * 0.0
 
-    return loss_chamfer, loss_edge, loss_face, loss_boundary, gt_meshes
+    return loss_chamfer, loss_edge, loss_face, loss_boundary, Meshes(verts=[], faces=[])
 
 
 def mesh_rcnn_inference(pred_meshes, pred_instances):
@@ -313,34 +305,6 @@ class EREstimate(nn.Module):
         x = self.conv4(x)
         return x
 
-def sample_points_on_edges(points, edges, quantity = 1, training=True):
-    n_batch = edges.shape[0]
-    n_edges = edges.shape[1]
-
-    if training:
-        weights = np.diff(np.sort(np.vstack(
-            [np.zeros((1, n_edges * quantity)), np.random.uniform(0, 1, size=(1, n_edges * quantity)),
-             np.ones((1, n_edges * quantity))]), axis=0), axis=0)
-    else:
-        weights = 0.5 * np.ones((2, n_edges * quantity))
-
-    weights = weights.reshape([2, quantity, n_edges])
-    weights = torch.from_numpy(weights).float().to(points.device)
-    weights = weights.transpose(1, 2)
-    weights = weights.transpose(0, 1).contiguous()
-    weights = weights.expand(n_batch, n_edges, 2, quantity).contiguous()
-    weights = weights.view(n_batch * n_edges, 2, quantity)
-
-
-    left_nodes = torch.gather(points.transpose(1, 2), 1, (edges[:, :, 0]).unsqueeze(-1).expand(edges.size(0), edges.size(1), 3))
-    right_nodes = torch.gather(points.transpose(1, 2), 1, (edges[:, :, 1]).unsqueeze(-1).expand(edges.size(0), edges.size(1), 3))
-    edge_points = torch.cat([left_nodes.unsqueeze(-1), right_nodes.unsqueeze(-1)], -1).view(n_batch*n_edges, 3, 2)
-    new_point_set = torch.bmm(edge_points, weights).contiguous()
-    new_point_set = new_point_set.view(n_batch, n_edges, 3, quantity)
-    new_point_set = new_point_set.transpose(2, 3).contiguous()
-    new_point_set = new_point_set.view(n_batch, n_edges * quantity, 3)
-    new_point_set = new_point_set.transpose(1, 2).contiguous()
-    return new_point_set
 
 @ROI_MESH_HEAD_REGISTRY.register()
 class MeshRCNNGraphConvHead(nn.Module):
@@ -438,16 +402,28 @@ class MeshRCNNGraphConvHead(nn.Module):
                         point_indicators.append(indicators)
                         remove_edges = torch.nonzero(torch.sigmoid(indicators) < self.remove_edge_th)   # [ [N_idx, E_idx] ]
                         remove_edges_list.append(remove_edges)
-                        new_faces = []
+                        if not self.training:
+                            new_faces = []
                         for batch_id in range(N):
                             rm_edges = remove_edges[remove_edges[:, 0] == batch_id, 1]
                             if len(rm_edges) > 0:
                                 edges[batch_id][rm_edges, :] = 0    # (setting edges to [0,0])
-                            new_batch_faces = remove_faces_according_to_edge(faces[batch_id], edges[batch_id], face_to_edges)
-                            new_faces.append(new_batch_faces)
+                            if not self.training:
+                                new_batch_faces = remove_faces_according_to_edge(faces[batch_id], edges[batch_id], face_to_edges)
+                                new_faces.append(new_batch_faces)
+                    # else:
+                    #     remove_edges_list = [item for item in remove_edges_list if len(item)]
+                    #     if remove_edges_list:
+                    #         remove_edges_list = torch.unique(torch.cat(remove_edges_list), dim=0)
+                    #         for batch_id in range(N):
+                    #             rm_edges = remove_edges_list[remove_edges_list[:, 0] == batch_id, 1]
+                    #             if len(rm_edges) > 0:
+                    #                 rm_candidates, counts = torch.unique(sphere_edges[rm_edges], return_counts=True)
+                    #                 boundary_ids = counts < sphere_adjacency[rm_candidates - 1].sum(1)
+                    #                 boundary_point_ids[batch_id][rm_candidates[boundary_ids] - 1] = 1
 
                 meshes.append(Meshes(verts=list(verts.permute(0,2,1)),
-                                     faces=new_faces if self.edge_classifier_on else list(faces)))
+                                     faces=new_faces if self.edge_classifier_on and not self.training else list(faces)))
             return meshes, points_from_edges, point_indicators
         # MESHRCNN
         else:
@@ -457,6 +433,34 @@ class MeshRCNNGraphConvHead(nn.Module):
                 meshes.append(mesh)
             return meshes
 
+def sample_points_on_edges(points, edges, quantity = 1, training=True):
+    n_batch = edges.shape[0]
+    n_edges = edges.shape[1]
+
+    if training:
+        weights = np.diff(np.sort(np.vstack(
+            [np.zeros((1, n_edges * quantity)), np.random.uniform(0, 1, size=(1, n_edges * quantity)),
+             np.ones((1, n_edges * quantity))]), axis=0), axis=0)
+    else:
+        weights = 0.5 * np.ones((2, n_edges * quantity))
+
+    weights = weights.reshape([2, quantity, n_edges])
+    weights = torch.from_numpy(weights).float().to(points.device)
+    weights = weights.transpose(1, 2)
+    weights = weights.transpose(0, 1).contiguous()
+    weights = weights.expand(n_batch, n_edges, 2, quantity).contiguous()
+    weights = weights.view(n_batch * n_edges, 2, quantity)
+
+
+    left_nodes = torch.gather(points.transpose(1, 2), 1, (edges[:, :, 0]).unsqueeze(-1).expand(edges.size(0), edges.size(1), 3))
+    right_nodes = torch.gather(points.transpose(1, 2), 1, (edges[:, :, 1]).unsqueeze(-1).expand(edges.size(0), edges.size(1), 3))
+    edge_points = torch.cat([left_nodes.unsqueeze(-1), right_nodes.unsqueeze(-1)], -1).view(n_batch*n_edges, 3, 2)
+    new_point_set = torch.bmm(edge_points, weights).contiguous()
+    new_point_set = new_point_set.view(n_batch, n_edges, 3, quantity)
+    new_point_set = new_point_set.transpose(2, 3).contiguous()
+    new_point_set = new_point_set.view(n_batch, n_edges * quantity, 3)
+    new_point_set = new_point_set.transpose(1, 2).contiguous()
+    return new_point_set
 
 def remove_faces_according_to_edge(faces, edges, face_to_edge):
     remaining_idx = torch.where(torch.any(edges != 0, axis=1))[0]   # idx of edges with any node != 0 ie to remain

@@ -14,7 +14,7 @@ from pytorch3d.io import load_obj
 
 from meshrcnn.structures import MeshInstances, VoxelInstances
 from meshrcnn.utils import shape as shape_utils
-
+from scipy.spatial import cKDTree
 from PIL import Image
 
 __all__ = ["MeshRCNNMapper"]
@@ -22,7 +22,7 @@ __all__ = ["MeshRCNNMapper"]
 logger = logging.getLogger(__name__)
 
 
-def annotations_to_instances(annos, image_size):
+def annotations_to_instances(annos, image_size, atlas=False):
     """
     Create an :class:`Instances` object used by the models,
     from instance annotations in the dataset dict.
@@ -41,6 +41,7 @@ def annotations_to_instances(annos, image_size):
     boxes.clip(image_size)
 
     classes = [obj["category_id"] for obj in annos]
+
     classes = torch.tensor(classes, dtype=torch.int64)
     target.gt_classes = classes
 
@@ -60,6 +61,15 @@ def annotations_to_instances(annos, image_size):
     if len(annos) and "mesh" in annos[0]:
         meshes = [obj["mesh"] for obj in annos]
         target.gt_meshes = MeshInstances(meshes)
+        # also add densities for total3d atlas
+        if atlas:
+            gt_densities = []
+            for mesh in meshes:
+                tree = cKDTree(mesh[0])
+                dists, indices = tree.query(mesh[0], k=30)
+                densities = torch.tensor([max(dists[point_set, 1]) ** 2 for point_set in indices]).to(device=mesh[0].device)
+                gt_densities.append(densities)
+            target.gt_densities = torch.stack(gt_densities)
 
     if len(annos) and "dz" in annos[0]:
         dz = [obj["dz"] for obj in annos]
@@ -163,7 +173,7 @@ class MeshRCNNMapper:
                 if obj.get("iscrowd", 0) == 0
             ]
             # Should not be empty during training
-            instances = annotations_to_instances(annos, image_shape)
+            instances = annotations_to_instances(annos, image_shape, not self.voxel_on)
             dataset_dict["instances"] = instances[instances.gt_boxes.nonempty()]
 
         return dataset_dict

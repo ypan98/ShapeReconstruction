@@ -411,7 +411,7 @@ class MeshRCNNROIHeads(StandardROIHeads):
                         init_mesh = Meshes(verts=[], faces=[])
 
                 pred_classes = torch.cat([instance.pred_classes[instance.pred_classes < self.num_classes] for instance in instances])
-                pred_meshes = self.mesh_head(mesh_features, init_mesh, pred_classes)
+                pred_meshes, _, _ = self.mesh_head(mesh_features, init_mesh, pred_classes)
                 mesh_rcnn_inference(pred_meshes[-1], instances)
             else:
                 assert self.voxel_on
