@@ -7,6 +7,8 @@ Code for the paper
 [Georgia Gkioxari][gg], Jitendra Malik, [Justin Johnson][jj]  
 ICCV 2019
 
+**[AtlasNet]**
+
 <div align="center">
   <img src="https://gkioxari.github.io/teasers/meshrcnn_blog_video.gif" width="550px" />
 </div>
