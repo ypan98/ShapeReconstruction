@@ -6,11 +6,10 @@ This is a project from the course Machine Learning for 3D Geometry @TUM [IN2392]
 
 To see the results, check the images in papers/final_report.
 
-Authors
-
-Yimin Pan
-Weixiao Xia
-Linzhao Wang
+<strong>Authors</strong>
+1. Yimin Pan
+2. Weixiao Xia
+3. Linzhao Wang
 
 
 ## Installation Requirements
