@@ -1,6 +1,16 @@
-# ShapeReconstruction
+# Shap eReconstruction
 # Mesh R-CNN + AtlasNet
 &nbsp;
+
+This is a project from the course Machine Learning for 3D Geometry @TUM [IN2392]. The model is able to detect objects from the input image and predict the final triangle mesh. The overall architecture takes inspiration from Mesh RCNN and AtlasNet, it can be seen as a mixture of these two.
+
+To see the results, check the images in papers/final_report.
+
+Authors
+
+Yimin Pan
+Weixiao Xia
+Linzhao Wang
 
 
 ## Installation Requirements
